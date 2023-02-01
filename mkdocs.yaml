@@ -1,0 +1,71 @@
+site_name: iae
+site_description: Infrastructure as everything.
+strict: true
+
+theme:
+  name: 'material'
+#  custom_dir: 'docs/theme'
+  palette:
+  - media: "(prefers-color-scheme: light)"
+    scheme: default
+    primary: pink
+    accent: pink
+    toggle:
+      icon: material/lightbulb-outline
+      name: "Switch to dark mode"
+  - media: "(prefers-color-scheme: dark)"
+    scheme: slate
+    primary: pink
+    accent: pink
+    toggle:
+      icon: material/lightbulb
+      name: "Switch to light mode"
+  features:
+    - content.tabs.link
+#  logo: 'logo-white.svg'
+#  favicon: 'favicon.png'
+
+#repo_name: spyoungtech/cdk-yaml
+#repo_url: https://github.com/spyountech/cdk-yaml
+#edit_uri: edit/main/docs/
+
+
+#extra_css:
+#- 'extra/terminal.css'
+#- 'extra/tweaks.css'
+#extra_javascript:
+#- 'extra/redirects.js'
+#- 'extra/ad.js'
+
+nav:
+- Overview: index.md
+
+- Usage:
+  - usage/usage.md
+  - usage/environments.md
+  - usage/manifests.md
+  - usage/overview.md
+  - usage/resources.md
+
+
+
+markdown_extensions:
+#- tables
+#- markdown_include.include:
+#    base_path: docs
+- toc:
+    permalink: true
+- admonition
+- pymdownx.highlight
+- pymdownx.extra
+- pymdownx.tabbed:
+    alternate_style: true
+
+plugins:
+- search
+#- exclude:
+#    glob:
+#    - _build/*
+#    - build/*
+#    - examples/*
+#    - requirements.txt
