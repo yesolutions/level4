@@ -3,11 +3,12 @@ from __future__ import annotations
 import abc
 import enum
 import functools
+import importlib
 import logging
 import warnings
 from collections import UserDict
 from functools import singledispatchmethod
-from typing import Any
+from typing import Any, Type
 from typing import Optional
 from typing import Union
 
@@ -57,16 +58,26 @@ def extract_apex_from_url(url: str) -> str:
 
 
 class EnvironmentProvider:
-    def __init__(self, environment_name: str, region: str, account: str):
+    def __init__(self, environment_name: str, region: str, account: str, default_hosted_zone_name: Optional[str] = None, vpc_lookup_params: Optional[dict[str, Any]] = None):
         self._account = account
         self._region = region
         self._environment_name: str = environment_name
         self._stack_cluster = None
         self._hosted_zone_cache = {}
         self._default_vpc = None
+        self._default_hosted_zone_name = default_hosted_zone_name
+        if vpc_lookup_params is None:
+            self._vpc_lookup_params = {'is_default': True}
+        else:
+            self._vpc_lookup_params = vpc_lookup_params
+
 
     def get_vpc_default(self, scope: ManifestStack) -> ec2.IVpc:
-        raise NotImplementedError('A default VPC was requested, but no default VPC configuration was provided.')
+        if self._default_vpc is not None:
+            return self._default_vpc
+        else:
+            self._default_vpc = ec2.Vpc.from_lookup(scope, 'defaultvpc', **self._vpc_lookup_params)
+            return self._default_vpc
 
     def get_hosted_zone_info_from_domain(self, scope: ManifestStack, domain: str) -> route53.IHostedZone:
         parts = domain.split('.')
@@ -130,8 +141,10 @@ class EnvironmentProvider:
         return {}
 
     def get_default_hosted_zone_name(self) -> str:
-        raise NotImplementedError('Resource requested default hosted zone name, but no name is configured')
-
+        if self._default_hosted_zone_name is not None:
+            return self._default_hosted_zone_name
+        else:
+            raise NotImplementedError('Resource requested default hosted zone name, but no name is configured')
 
 class PortRangeConfiguration(pydantic.BaseModel):
     start_port: int
@@ -937,6 +950,11 @@ class ResourcesDefinition(pydantic.BaseModel):
     fargate_services: Optional[dict[str, FargateServiceResource]] = pydantic.Field(default_factory=dict)
     sqs_queues: Optional[dict[str, SQSQueueResource]] = pydantic.Field(default_factory=dict)
 
+class EnvironmentDefinition(pydantic.BaseModel):
+    name: str
+    regions: Optional[list[str]] = None
+    account: Optional[str] = None
+    provider_config: Optional[dict[str, Any]] = None
 
 class Manifest(pydantic.BaseModel):
     version: ManifestVersion = pydantic.Field(
@@ -947,16 +965,47 @@ class Manifest(pydantic.BaseModel):
         description='A short name. This will be used as the stack name as well as for automatic naming of certain resources. Must be unique!',
     )
     resources: dict[str, ResourcesDefinition]
-    environments: Optional[list[str]] = pydantic.Field(
+    environments: Optional[list[Union[str, EnvironmentDefinition]]] = pydantic.Field(
         None,
         description='The environments that are available for deployment. IMPORTANT: removing environments will NOT destroy the stacks. Before removing an entry from this list, destroy the stack FIRST.',
     )
+
+    regions: Optional[list[str]] = pydantic.Field(
+        None,
+        description='The regions in which to create your stack(s). By default, this list is applied to all environments that do not specify a region list'
+    )
+
+    account: Optional[str] = pydantic.Field(
+        None,
+        description='The default account to use for deployments',
+    )
+
     github_repositories: Optional[list[str]] = pydantic.Field(
         None,
         description='Allows listed github repos to deploy resources in this manifest. Repositories should be in the format of `Owner/Repo`',
     )
     tags: Optional[dict[str, dict[str, str]]] = pydantic.Field(None, description='Tags that will be added to all resources in the stack.')
     implicit_connections: bool = False
+
+    provider_class: Optional[str] = pydantic.Field(
+        None,
+        description='The environment provider class to use'
+    )
+
+    provider_config: dict[str, Any] = pydantic.Field(
+        description='keyword arguments to pass to the provider',
+        default_factory=dict
+    )
+
+    def get_provider_class(self) -> Type[EnvironmentProvider]:
+        if self.provider_class is None:
+            return EnvironmentProvider
+        else:
+            module_name, class_name = self.provider_class.rsplit('.', 1)
+            mod = importlib.import_module(module_name)
+            klass = getattr(mod, class_name)
+            assert issubclass(klass, EnvironmentProvider)
+            return klass
 
 
 @jsii.implements(aws_cdk.IAspect)
@@ -1179,9 +1228,9 @@ class ManifestStack(aws_cdk.Stack):
     def environment_name(self) -> str:
         return self._provider.environment_name
 
-    @property
-    def account(self) -> str:
-        return self._provider.account
+    # @property
+    # def account(self) -> str:
+    #     return self._provider.account
 
     @property
     def region(self) -> str:
@@ -1350,6 +1399,23 @@ class ManifestStack(aws_cdk.Stack):
         )
         kwargs['manifest'] = manifest
         return cls(scope, provider, **kwargs)
+
+    @classmethod
+    def with_dynamic_provider(cls, scope: aws_cdk.App, file_path: str, loader: Optional[ManifestLoader] = None, provider_kwargs: Optional[dict[str, Any]] = None, **kwargs):
+        if provider_kwargs is None:
+            provider_kwargs = {}
+        if loader is None:
+            loader = ManifestLoader()
+        initial_manifest = loader.load(
+            file_path=file_path, environment_name='', account='', region=''
+        )
+        ProviderClass = initial_manifest.get_provider_class()
+        provider = ProviderClass(**provider_kwargs)
+        manifest = loader.load(file_path=file_path, environment_name=provider.environment_name, account=provider.account, region=provider.region)
+        kwargs['manifest'] = manifest
+        return cls(scope, provider, **kwargs)
+
+
 
 
 class _unset:
