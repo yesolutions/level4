@@ -1,5 +1,5 @@
 from .model import EnvironmentProvider
-from .model import ManifestStack
 from .model import ManifestLoader
+from .model import ManifestStack
 
 __all__ = ['EnvironmentProvider', 'ManifestStack', 'ManifestLoader']

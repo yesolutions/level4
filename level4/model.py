@@ -6,10 +6,10 @@ import functools
 import importlib
 import logging
 import warnings
-from collections import UserDict
 from functools import singledispatchmethod
-from typing import Any, Type
+from typing import Any
 from typing import Optional
+from typing import Type
 from typing import Union
 
 import aws_cdk
@@ -49,6 +49,7 @@ class CreationDeferredException(Exception):
 class ManifestVersion(enum.Enum):
     VER_1 = '1'
 
+
 class Grantee(pydantic.BaseModel):
     resource_id: str
 
@@ -58,7 +59,14 @@ def extract_apex_from_url(url: str) -> str:
 
 
 class EnvironmentProvider:
-    def __init__(self, environment_name: str, region: str, account: str, default_hosted_zone_name: Optional[str] = None, vpc_lookup_params: Optional[dict[str, Any]] = None):
+    def __init__(
+        self,
+        environment_name: str,
+        region: str,
+        account: str,
+        default_hosted_zone_name: Optional[str] = None,
+        vpc_lookup_params: Optional[dict[str, Any]] = None,
+    ):
         self._account = account
         self._region = region
         self._environment_name: str = environment_name
@@ -70,7 +78,6 @@ class EnvironmentProvider:
             self._vpc_lookup_params = {'is_default': True}
         else:
             self._vpc_lookup_params = vpc_lookup_params
-
 
     def get_vpc_default(self, scope: ManifestStack) -> ec2.IVpc:
         if self._default_vpc is not None:
@@ -146,6 +153,7 @@ class EnvironmentProvider:
         else:
             raise NotImplementedError('Resource requested default hosted zone name, but no name is configured')
 
+
 class PortRangeConfiguration(pydantic.BaseModel):
     start_port: int
     end_port: int
@@ -205,8 +213,6 @@ class Connectable(pydantic.BaseModel):
     connections: Optional[ConnectionsConfiguration] = None
 
 
-
-
 class BaseResource(pydantic.BaseModel, abc.ABC):
     # id: str
 
@@ -230,6 +236,7 @@ class BucketNotificationConfiguration(pydantic.BaseModel):
     destination: Grantee = pydantic.Field(...)
     filters: Optional[list[NotificationKeyFilter]] = pydantic.Field(default_factory=list)
 
+
 class BucketResource(BaseResource):
     versioned: bool = pydantic.Field(False, description='Whether this bucket should have versioning turned on or not. Default: false')
     grant_public_read: bool = pydantic.Field(
@@ -251,7 +258,6 @@ class BucketResource(BaseResource):
     grant_read_write: Optional[list[Grantee]] = pydantic.Field(default_factory=list)
     grant_write: Optional[list[Grantee]] = pydantic.Field(default_factory=list)
 
-
     # default_access_grants: bool = pydantic.Field(
     #     True,
     #     description='When set to true (the default) read/write access to this bucket will be granted to the IAM roles for other relevant resources in this stack (e.g., services).',
@@ -260,8 +266,6 @@ class BucketResource(BaseResource):
     #     None,
     #     description='Import an existing bucket by name, rather than creating a new one (most other options are ignored when this method is used)',
     # )
-
-
 
     def to_construct(self, scope: ManifestStack, id: str) -> s3.Bucket:
         kwargs = {
@@ -515,6 +519,7 @@ class FargateContainerDefinition(pydantic.BaseModel):
     command: Optional[list[str]] = pydantic.Field(None, description='The command passed to the container on start. E.g., ["yarn", "run"]')
     memory_limit_mib: Optional[int] = pydantic.Field(None, description='Memory limit in megabytes')
 
+
 class ALBServiceHealthcheckOptions(pydantic.BaseModel):
     path: str = '/healthz'
     unhealthy_threshold_count: Optional[int] = pydantic.Field(
@@ -537,7 +542,6 @@ class FargateServiceResource(BaseResource, Connectable):
     def to_construct(self, scope: ManifestStack, id: str) -> ecs.FargateService:
         worker_taskdef = ecs.FargateTaskDefinition(scope, f'{id}-taskdef', family=f'{scope.stack_name}-{id}')
         for container_name, container in self.containers.items():
-
             # TODO: move this to an aspect
             # db_secrets = {}
             # for db_id, db in scope.databases.items():
@@ -693,7 +697,6 @@ class ApplicationLoadBalancedFargateServiceResource(BaseResource, Connectable):
     def to_construct(self, scope: ManifestStack, id: str) -> ecs_patterns.ApplicationLoadBalancedFargateService:
         service_taskdef = ecs.FargateTaskDefinition(scope, f'{id}-taskdef', family=f'{scope.stack_name}-{id}')
         for container_name, container in self.containers.items():
-
             # TODO: move to aspect
             # db_secrets = {}
             # for db_id, db in scope.databases.items():
@@ -807,7 +810,6 @@ class DeadLetterQueueConfiguration(pydantic.BaseModel):
     queue_id: str = pydantic.Field(..., description='Resource id of the queue to use for DLQ')
 
 
-
 class SQSQueueResource(BaseResource):
     content_based_deduplication: Optional[bool] = pydantic.Field(
         None,
@@ -875,7 +877,6 @@ class SQSQueueResource(BaseResource):
     grant_consume_messages: Optional[list[Grantee]] = pydantic.Field(default_factory=list)
     grant_full_access: Optional[list[Grantee]] = pydantic.Field(default_factory=list)
 
-
     def to_construct(self, scope: ManifestStack, id) -> sqs.Queue:
         data_key_reuse = aws_cdk.Duration.seconds(self.data_key_reuse_seconds) if self.data_key_reuse_seconds is not None else None
         delivery_delay = aws_cdk.Duration.seconds(self.delivery_delay_seconds) if self.delivery_delay_seconds is not None else None
@@ -887,13 +888,13 @@ class SQSQueueResource(BaseResource):
             aws_cdk.Duration.seconds(self.visibility_timeout_seconds) if self.visibility_timeout_seconds is not None else None
         )
 
-
-
         if self.dead_letter_queue:
             try:
                 q = scope.get_resource(self.dead_letter_queue.queue_id)
             except KeyError as e:
-                raise CreationDeferredException(f"referenced DLQ {self.dead_letter_queue.queue_id!r} does not exist yet. Deferring until it is created.") from e
+                raise CreationDeferredException(
+                    f'referenced DLQ {self.dead_letter_queue.queue_id!r} does not exist yet. Deferring until it is created.'
+                ) from e
             dead_letter_queue = sqs.DeadLetterQueue(max_receive_count=self.dead_letter_queue.max_receive_count, queue=q)
         else:
             dead_letter_queue = None
@@ -918,8 +919,8 @@ class SQSQueueResource(BaseResource):
             visibility_timeout=visibility_timeout,
         )
 
-
         return queue
+
 
 # class SQSDeadLetterQueueResource(BaseResource):
 #     def to_construct(self, scope: ManifestStack, id) -> sqs.DeadLetterQueue:
@@ -950,11 +951,13 @@ class ResourcesDefinition(pydantic.BaseModel):
     fargate_services: Optional[dict[str, FargateServiceResource]] = pydantic.Field(default_factory=dict)
     sqs_queues: Optional[dict[str, SQSQueueResource]] = pydantic.Field(default_factory=dict)
 
+
 class EnvironmentDefinition(pydantic.BaseModel):
     name: str
     regions: Optional[list[str]] = None
     account: Optional[str] = None
     provider_config: Optional[dict[str, Any]] = None
+
 
 class Manifest(pydantic.BaseModel):
     version: ManifestVersion = pydantic.Field(
@@ -972,7 +975,7 @@ class Manifest(pydantic.BaseModel):
 
     regions: Optional[list[str]] = pydantic.Field(
         None,
-        description='The regions in which to create your stack(s). By default, this list is applied to all environments that do not specify a region list'
+        description='The regions in which to create your stack(s). By default, this list is applied to all environments that do not specify a region list',
     )
 
     account: Optional[str] = pydantic.Field(
@@ -987,15 +990,9 @@ class Manifest(pydantic.BaseModel):
     tags: Optional[dict[str, dict[str, str]]] = pydantic.Field(None, description='Tags that will be added to all resources in the stack.')
     implicit_connections: bool = False
 
-    provider_class: Optional[str] = pydantic.Field(
-        None,
-        description='The environment provider class to use'
-    )
+    provider_class: Optional[str] = pydantic.Field(None, description='The environment provider class to use')
 
-    provider_config: dict[str, Any] = pydantic.Field(
-        description='keyword arguments to pass to the provider',
-        default_factory=dict
-    )
+    provider_config: dict[str, Any] = pydantic.Field(description='keyword arguments to pass to the provider', default_factory=dict)
 
     def get_provider_class(self) -> Type[EnvironmentProvider]:
         if self.provider_class is None:
@@ -1046,7 +1043,6 @@ class StackDefaults:
         self.vpc: Optional[ec2.IVpc] = vpc
 
 
-
 class ManifestStack(aws_cdk.Stack):
     def __init__(
         self,
@@ -1077,7 +1073,6 @@ class ManifestStack(aws_cdk.Stack):
         self._create_resources()
         self._configure_resources()
         self._configure_connections()
-
 
     @functools.singledispatchmethod
     def configure_resource(self, resource: Any, definition: BaseResource) -> bool:
@@ -1127,12 +1122,10 @@ class ManifestStack(aws_cdk.Stack):
             grantable = self.get_resource(grantee.resource_id)
             queue.grant_send_messages(grantable)
 
-
     def _configure_resources(self):
         for id, definition in self.definitions.items():
             resource = self.resources[id]
             self.configure_resource(resource, definition)
-
 
     def get_vpc_default(self):
         if self.defaults is not None:
@@ -1387,7 +1380,6 @@ class ManifestStack(aws_cdk.Stack):
                 )
             done = []
 
-
     @classmethod
     def from_manifest_file(
         cls, scope: aws_cdk.App, file_path: str, provider: EnvironmentProvider, loader: Optional[ManifestLoader] = None, **kwargs
@@ -1401,33 +1393,35 @@ class ManifestStack(aws_cdk.Stack):
         return cls(scope, provider, **kwargs)
 
     @classmethod
-    def with_dynamic_provider(cls, scope: aws_cdk.App, file_path: str, loader: Optional[ManifestLoader] = None, provider_kwargs: Optional[dict[str, Any]] = None, **kwargs):
+    def with_dynamic_provider(
+        cls,
+        scope: aws_cdk.App,
+        file_path: str,
+        loader: Optional[ManifestLoader] = None,
+        provider_kwargs: Optional[dict[str, Any]] = None,
+        **kwargs,
+    ):
         if provider_kwargs is None:
             provider_kwargs = {}
         if loader is None:
             loader = ManifestLoader()
         initial_manifest = loader.load(
-            file_path=file_path, environment_name='', account='', region=''
+            file_path=file_path,
+            environment_name=provider_kwargs.get('environment_name', ''),
+            account=provider_kwargs.get('account', ''),
+            region=provider_kwargs.get('region', ''),
         )
         ProviderClass = initial_manifest.get_provider_class()
         provider = ProviderClass(**provider_kwargs)
-        manifest = loader.load(file_path=file_path, environment_name=provider.environment_name, account=provider.account, region=provider.region)
+        manifest = loader.load(
+            file_path=file_path, environment_name=provider.environment_name, account=provider.account, region=provider.region
+        )
         kwargs['manifest'] = manifest
         return cls(scope, provider, **kwargs)
 
 
-
-
 class _unset:
     ...
-
-
-class _NoUndefinedAllowed(UserDict):
-    def get(self, key, default=None):
-        item = super().get(key, _unset)
-        if item is _unset:
-            raise ValueError('Attempted to lookup undefined variable from context')
-        return item
 
 
 def _deep_merge(d1: dict[str, Any], d2: dict[str, Any]) -> dict[str, Any]:
@@ -1449,9 +1443,8 @@ class ManifestLoader:
     def __init__(self, **kwargs):
         self._kwargs = kwargs
 
-    def _make_context(self, **kwargs) -> UserDict[str, Any]:
-        # XXX: This doesn't really work. Jinja casts back to dict
-        return _NoUndefinedAllowed(**kwargs)
+    def _make_context(self, **kwargs) -> dict[str, Any]:
+        return dict(**kwargs)
 
     def load(self, file_path, environment_name, account: str, region: str, **template_kwargs) -> Manifest:
         with open(file_path, 'r') as f:
