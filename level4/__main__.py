@@ -26,7 +26,7 @@ def main():
                     provider_kwargs.update(extra_kwargs)
                     provider_kwargs.update(environment_name=env, account=manifest.account, region=region)
                 else:
-                    manifest = loader.load(args.spec, environment_name=env.name, account=initial_manifest.account, region=region)
+                    manifest = loader.load(args.spec, environment_name=env.name, account=env.account or initial_manifest.account, region=region)
                     provider_kwargs = {}
                     extra_kwargs = manifest.provider_config
                     provider_kwargs.update(extra_kwargs)
@@ -36,7 +36,7 @@ def main():
                 ManifestStack.with_dynamic_provider(app, args.spec, provider_kwargs=provider_kwargs)
         else:
             for region in env.regions:
-                manifest = loader.load(args.spec, environment_name=env.name, account=initial_manifest.account, region=region)
+                manifest = loader.load(args.spec, environment_name=env.name, account=env.account or initial_manifest.account, region=region)
                 provider_kwargs = {}
                 extra_kwargs = manifest.provider_config
                 provider_kwargs.update(extra_kwargs)
