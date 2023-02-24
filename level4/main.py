@@ -31,6 +31,15 @@ environments:
     # provider_config:
     #   default_hosted_zone_name: 'my-apex-domain.eu'
 
+
+
+# you may specify specific region(s) in which your stacks will be created
+# if omitted, region is determined by your default AWS_REGION resolved from your AWS configuration
+# if multiple regions are configured, a stack will be created for each combination of region and environment name,
+# for each environment that does not specify its region explicitly
+regions:
+ - us-east-1
+
 # You can customize the Provider class used 
 # provider_class: 'app.MyProvider'
 
