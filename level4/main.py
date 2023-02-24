@@ -1,10 +1,10 @@
 import argparse
+import json
+import os
+import pathlib
 import subprocess
 import sys
 from typing import Literal
-import os
-import pathlib
-import json
 
 _MANIFEST_STANDALONE_TEMPLATE = '''\
 version: "1"
@@ -40,7 +40,7 @@ environments:
 regions:
  - us-east-1
 
-# You can customize the Provider class used 
+# You can customize the Provider class used
 # provider_class: 'app.MyProvider'
 
 # provide provider level configurations:
@@ -57,7 +57,7 @@ resources:
       mybucket:
         bucket_name: "{name}-mybucket-{{{{ environment_name }}}}"
         encryption: S3_MANAGED
-  
+
   # override resource configurations for specific environments
   # hashes are merged with configuration specified in the `default` section
   production:
@@ -81,7 +81,7 @@ resources:
       mybucket:
         bucket_name: "{name}-mybucket-{{{{ environment_name }}}}"
         encryption: S3_MANAGED
-  
+
   # override resource configurations for specific environments
   # hashes are merged with configuration specified in the `default` section
   production:
@@ -127,37 +127,39 @@ from level4 import ManifestStack
 
 class {camel_name}Stack(ManifestStack):
     ...
-    
+
     # You can customize many things at the stack level by implementing/overriding methods in your stack class
-    # although these configurations are all possible just by editing the manifest, it can be useful to 
+    # although these configurations are all possible just by editing the manifest, it can be useful to
     # have different levels at which customization is possible, as stack classes can be reused across many manifest files, for example.
 
 
     # if you wish to add resources or make other modifications in addition to those defined in the manifest file
     # uncomment the following:
-    
+
     # def __init__(self, *args, **kwargs):
     #     super().__init__(self, *args, **kwargs)  # perform the creation from manifest
-    #     
+    #
     #     # create an additional resource, just like you would in any other CDK stack
     #     # as an example:
     #     queue = sqs.Queue(
     #         self, "my-queue",
     #         visibility_timeout=Duration.seconds(300),
     #     )
-    
+
     # you can also just override specific methods to customize resource creation with manifest definitions
     # for example, to make all buckets in the defined manifest public, you can uncomment the following:
-    
+
     # def create_bucket(self, id: str, bucket_definition: BucketResource) -> s3.Bucket:
     #     bucket = super().create_bucket(id, bucket_definition=bucket_definition)
     #     bucket.grant_public_access()
     #     return bucket
-    
+
 '''
+
 
 def _init():
     subprocess.run(['cdk', 'init', 'app', '--language', 'python'], check=True, shell=True)
+
 
 def _init_standalone(name) -> int:
     _init()
@@ -177,6 +179,7 @@ def _init_standalone(name) -> int:
         json.dump(cdkjson, f, indent=4)
     return 0
 
+
 def _init_app(name) -> int:
     _init()
     pyname = name.replace('-', '_')
@@ -192,10 +195,6 @@ def _init_app(name) -> int:
     return 0
 
 
-
-
-
-
 def init(level4_template: Literal['standalone', 'app'], cdk_args: list[str]) -> int:
     name = pathlib.Path(os.getcwd()).name
     if level4_template == 'standalone':
@@ -209,10 +208,7 @@ def init(level4_template: Literal['standalone', 'app'], cdk_args: list[str]) -> 
 
 def main():
     parser = argparse.ArgumentParser('level4')
-    subparsers = parser.add_subparsers(title='subcommands',
-                                       description='valid subcommands',
-                                       dest='command'
-                                       )
+    subparsers = parser.add_subparsers(title='subcommands', description='valid subcommands', dest='command')
     init_parser = subparsers.add_parser('init')
     init_parser.add_argument('--level4-template', type=str, choices=('standalone', 'app'), default='app')
     init_parser.add_argument('cdk_init_args', nargs='*', action='append', help='additional arguments passed to `cdk init`')
