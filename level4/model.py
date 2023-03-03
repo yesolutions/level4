@@ -5,6 +5,7 @@ import enum
 import functools
 import importlib
 import logging
+import sys
 import warnings
 from functools import singledispatchmethod
 from typing import Any
@@ -27,6 +28,7 @@ from aws_cdk import aws_ecs as ecs
 from aws_cdk import aws_ecs_patterns as ecs_patterns
 from aws_cdk import aws_elasticache as elasticache
 from aws_cdk import aws_elasticloadbalancingv2 as elbv2
+from aws_cdk import aws_iam as iam
 from aws_cdk import aws_logs
 from aws_cdk import aws_rds as rds
 from aws_cdk import aws_route53 as route53
@@ -993,6 +995,7 @@ class Manifest(pydantic.BaseModel):
     provider_class: Optional[str] = pydantic.Field(None, description='The environment provider class to use')
 
     provider_config: dict[str, Any] = pydantic.Field(description='keyword arguments to pass to the provider', default_factory=dict)
+    integrations: Optional[dict[str, dict[str, Any]]] = None
 
     def get_provider_class(self) -> Type[EnvironmentProvider]:
         if self.provider_class is None:
@@ -1065,14 +1068,17 @@ class ManifestStack(aws_cdk.Stack):
         self.manifest = manifest
         self._env = env
         self._provider = provider
+        self.integrations = {}
         self.definitions: dict[str, BaseResource] = {}
         self.resources: dict[str, constructs.Construct] = {}
         self._hz_lookup_cache: dict[str, route53.IHostedZone] = {}
         self._default_fargate_cluster = None
         self._seen_connectables = set()
+        self._initialize_integrations()
         self._create_resources()
         self._configure_resources()
         self._configure_connections()
+        self._configure_integrations()
 
     @functools.singledispatchmethod
     def configure_resource(self, resource: Any, definition: BaseResource) -> bool:
@@ -1274,6 +1280,21 @@ class ManifestStack(aws_cdk.Stack):
 
                     method(**configuration)
 
+    def _initialize_integrations(self):
+        if not self.manifest.integrations:
+            return
+        for integration_class_name, config in self.manifest.integrations.items():
+            module_name, class_name = integration_class_name.rsplit('.', 1)
+            mod = importlib.import_module(module_name)
+            integration_class = getattr(mod, class_name)
+            integration = integration_class(config)
+            self.integrations[integration_class_name] = integration
+
+    def _configure_integrations(self) -> None:
+        for integration_class_name, integration in self.integrations.items():
+            integration.configure(self, integration_class_name)
+        return
+
     def get_resource(self, resource_id: str) -> Any:
         if '.' in resource_id:
             resource_id, *attrs = resource_id.split('.')
@@ -1420,10 +1441,6 @@ class ManifestStack(aws_cdk.Stack):
         return cls(scope, provider, **kwargs)
 
 
-class _unset:
-    ...
-
-
 def _deep_merge(d1: dict[str, Any], d2: dict[str, Any]) -> dict[str, Any]:
     new_dict = {}
     for key, val in d1.items():
@@ -1475,6 +1492,171 @@ def _manifest_schema(indent: int = 4, outfile: Optional[str] = None) -> str:
     else:
         print(schema)
     return schema
+
+
+_integration_registry = {}
+
+
+class IntegrationBase:
+    def __init_subclass__(cls, **kwargs):
+        if hasattr(cls, 'integration_name'):
+            name = cls.integration_name
+        else:
+            name = '.'.join([cls.__module__, cls.__qualname__])
+        if name in _integration_registry:
+            raise Exception(f'Integration with name {name} already registered')
+        _integration_registry[name] = cls
+        return super().__init_subclass__(**kwargs)
+
+    def __init__(self, configuration: dict[str, Any]):
+        self.configuration: dict[str, Any] = configuration
+
+    @abc.abstractmethod
+    def configure(self, manifest_stack: ManifestStack, id: str) -> constructs.Construct | constructs.IConstruct:
+        ...
+
+
+# TODO: move concrete integrations into separate package (in part, so they can be versioned separately)
+
+
+class GitHubActionsIntegrationConfiguration(pydantic.BaseModel):
+    repositories: list[str] = ...
+    role_name: Optional[str] = None
+    oidc_provider_arn: str = ...
+
+
+class GitLabCICDIntegrationConfiguration(pydantic.BaseModel):
+    project_paths: list[str] = ...
+    oidc_provider_arn: str = ...
+    role_name: Optional[str] = None
+
+
+class DeployConstruct(constructs.Construct):
+    def __init__(
+        self,
+        scope: ManifestStack,
+        id: str,
+        *,
+        configuration: GitHubActionsIntegrationConfiguration | GitLabCICDIntegrationConfiguration,
+    ):
+        super().__init__(scope, id)
+        self.manifest_stack = scope
+        self.configuration = configuration
+
+    def _make_role(self, assumed_by, role_name: Optional[str] = None):
+        if role_name is None:
+            role_name = f'level4-deploy-{self.manifest_stack.stack_name}'
+        self.deployment_role = iam.Role(self, 'deploy-role', role_name=role_name, assumed_by=assumed_by)
+        aws_cdk.CfnOutput(self, 'deployrole', value=self.deployment_role.role_arn)
+
+    def _configure_resources(self):
+        self._configured_ecs_baselines = False
+        for resource_id, definition in self.manifest_stack.definitions.items():
+            self.configure_deployment(resource_id, definition)
+        if self._configured_ecs_baselines:
+            self.deployment_role.add_to_policy(self.ecs_service_deploy_policy)
+
+    @singledispatchmethod
+    def configure_deployment(self, definition: BaseResource, id: str) -> None:
+        return None
+
+    @configure_deployment.register
+    def _(self, definition: BucketResource, id: str) -> None:
+        resource: s3.Bucket = self.manifest_stack.resources[id]  # type: ignore
+        resource.grant_read_write(self.deployment_role)
+
+    @configure_deployment.register
+    def _(self, definition: RDSDatabaseResource, id: str) -> None:
+        resource: rds.DatabaseInstance = self.manifest_stack.resources[id]  # type: ignore
+        resource.secret.grant_read(self.deployment_role)
+
+    @configure_deployment.register
+    def _(self, definition: ApplicationLoadBalancedFargateServiceResource, id: str) -> None:
+        resource: ecs_patterns.ApplicationLoadBalancedFargateService = self.manifest_stack.resources[id]  # type: ignore
+        for container_name, container_definition in definition.containers.items():
+            repo = ecr.Repository.from_repository_name(self, f'{container_name}-repo', repository_name=container_definition.ecr_repository)
+            repo.grant_pull_push(self.deployment_role)
+        if not self._configured_ecs_baselines:
+            self._configured_ecs_baselines = True
+            self.deployment_role.add_to_policy(
+                iam.PolicyStatement(
+                    actions=['ecs:DescribeTaskDefinition', 'ecs:RegisterTaskDefinition'],
+                    resources=['*'],
+                    effect=iam.Effect.ALLOW,
+                )
+            )
+            self.ecs_service_deploy_policy = iam.PolicyStatement(
+                actions=['ecs:UpdateService', 'ecs:DescribeServices'], effect=iam.Effect.ALLOW
+            )
+        self.ecs_service_deploy_policy.add_resources(resource.service.service_arn)
+        exec_role = resource.task_definition.execution_role or resource.task_definition.obtain_execution_role()
+        if exec_role:
+            exec_role.grant_pass_role(self.deployment_role)
+        task_role = resource.task_definition.task_role
+        if task_role:
+            task_role.grant_pass_role(self.deployment_role)
+
+    @configure_deployment.register
+    def _(self, definition: CloudFrontDistributionResource, id: str) -> None:
+        resource: cloudfront.Distribution = self.manifest_stack.resources[id]  # type: ignore
+        print(resource, type(definition), file=sys.stderr)
+        self.deployment_role.add_to_policy(
+            iam.PolicyStatement(
+                actions=['cloudfront:GetDistribution', 'cloudfront:CreateInvalidation'],
+                effect=iam.Effect.ALLOW,
+                resources=['arn:aws:cloudfront::*:distribution/' + resource.distribution_id],
+            )
+        )
+
+
+class GitHubActionIntegrationConstruct(DeployConstruct):
+    def __init__(self, scope: ManifestStack, id: str, *, configuration: GitHubActionsIntegrationConfiguration):
+        super().__init__(scope, id, configuration=configuration)
+        conditions = {'StringEquals': {'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com'}}
+        condition = {'StringLike': {'token.actions.githubusercontent.com:sub': []}}
+
+        for repo in configuration.repositories:
+            condition['StringLike']['token.actions.githubusercontent.com:sub'].append(f'repo:{repo}:*')
+
+        conditions.update(**condition)
+        principal = iam.FederatedPrincipal(
+            configuration.oidc_provider_arn, assume_role_action='sts:AssumeRoleWithWebIdentity'
+        ).with_conditions(conditions)
+        self._make_role(role_name=configuration.role_name, assumed_by=principal)
+        self._configure_resources()
+
+
+class GitLabCICDIntegrationConstruct(DeployConstruct):
+    def __init__(self, scope: ManifestStack, id: str, *, configuration: GitLabCICDIntegrationConfiguration):
+        super().__init__(scope, id, configuration=configuration)
+        condition = {'gitlab.example.com:sub': []}
+        provider_url = configuration.oidc_provider_arn.split('/')[-1]
+        for repo in configuration.project_paths:
+            condition[f'{provider_url}:sub'].append(f'repo:{repo}:*')
+
+        principal = iam.FederatedPrincipal(
+            configuration.oidc_provider_arn, assume_role_action='sts:AssumeRoleWithWebIdentity'
+        ).with_conditions(conditions={'StringLike': condition})
+        self._make_role(role_name=configuration.role_name, assumed_by=principal)
+        self._configure_resources()
+
+
+class GitHubActionsIntegration(IntegrationBase):
+    def __init__(self, configuration: dict[str, Any]):
+        super().__init__(configuration=configuration)
+        self.definition = GitHubActionsIntegrationConfiguration(**self.configuration)
+
+    def configure(self, manifest_stack: ManifestStack, id: str) -> GitHubActionIntegrationConstruct:
+        return GitHubActionIntegrationConstruct(scope=manifest_stack, id=id, configuration=self.definition)
+
+
+class GitLabActionsIntegration(IntegrationBase):
+    def __init__(self, configuration: dict[str, Any]):
+        super().__init__(configuration=configuration)
+        self.definition = GitLabCICDIntegrationConfiguration(**self.configuration)
+
+    def configure(self, manifest_stack: ManifestStack, id: str) -> GitLabCICDIntegrationConstruct:
+        return GitLabCICDIntegrationConstruct(scope=manifest_stack, id=id, configuration=self.definition)
 
 
 if __name__ == '__main__':
