@@ -73,9 +73,10 @@ class EnvironmentProvider:
         self._region = region
         self._environment_name: str = environment_name
         self._stack_cluster = None
-        self._hosted_zone_cache = {}
-        self._default_vpc = None
+        self._hosted_zone_cache: dict[str, route53.IHostedZone] = {}
+        self._default_vpc: Optional[ec2.IVpc] = None
         self._default_hosted_zone_name = default_hosted_zone_name
+        self._vpc_lookup_params: dict[str, Any]
         if vpc_lookup_params is None:
             self._vpc_lookup_params = {'is_default': True}
         else:
@@ -102,7 +103,7 @@ class EnvironmentProvider:
     def get_default_database_instance_type(self) -> ec2.InstanceType:
         return ec2.InstanceType.of(instance_class=ec2.InstanceClass.T3, instance_size=ec2.InstanceSize.SMALL)
 
-    def get_default_service_log_retention_period(self):
+    def get_default_service_log_retention_period(self) -> aws_logs.RetentionDays:
         return aws_logs.RetentionDays.ONE_YEAR
 
     @abc.abstractmethod
@@ -139,7 +140,7 @@ class EnvironmentProvider:
     def default_service_log_retention_period(self) -> aws_logs.RetentionDays:
         return aws_logs.RetentionDays.ONE_YEAR
 
-    def get_default_database_instance_size(self) -> str | ec2.InstanceType:
+    def get_default_database_instance_size(self) -> ec2.InstanceType:
         return ec2.InstanceType.of(instance_class=ec2.InstanceClass.T3, instance_size=ec2.InstanceSize.SMALL)
 
     def get_default_elasticache_instance_type(self) -> str:
@@ -236,7 +237,7 @@ class NotificationKeyFilter(pydantic.BaseModel):
 class BucketNotificationConfiguration(pydantic.BaseModel):
     event: s3.EventType = pydantic.Field(...)
     destination: Grantee = pydantic.Field(...)
-    filters: Optional[list[NotificationKeyFilter]] = pydantic.Field(default_factory=list)
+    filters: list[NotificationKeyFilter] = pydantic.Field(default_factory=list)
 
 
 class BucketResource(BaseResource):
@@ -255,7 +256,7 @@ class BucketResource(BaseResource):
         BucketEncryptionOption.S3_MANAGED,
         description='How the bucket should be encrypted. By default uses S3-managed encryption. In most cases, you should not change this parameter from the default',
     )
-    event_notifications: Optional[list[BucketNotificationConfiguration]] = pydantic.Field(default_factory=list)
+    event_notifications: list[BucketNotificationConfiguration] = pydantic.Field(default_factory=list)
     grant_read: Optional[list[Grantee]] = pydantic.Field(default_factory=list)
     grant_read_write: Optional[list[Grantee]] = pydantic.Field(default_factory=list)
     grant_write: Optional[list[Grantee]] = pydantic.Field(default_factory=list)
@@ -270,7 +271,7 @@ class BucketResource(BaseResource):
     # )
 
     def to_construct(self, scope: ManifestStack, id: str) -> s3.Bucket:
-        kwargs = {
+        kwargs: dict[str, Any] = {
             'bucket_name': self.bucket_name,
             'versioned': self.versioned,
             'website_error_document': self.website_error_document,
@@ -343,7 +344,7 @@ class RedisCluster(constructs.Construct):
         self.cache_cluster.node.add_dependency(self.subnet_group)
 
     @property
-    def connections(self):
+    def connections(self) -> ec2.Connections:
         return self._connections
 
 
@@ -373,21 +374,22 @@ class CloudFrontBehaviorOptions(pydantic.BaseModel):
 
 
 class CloudFrontDistributionResource(BaseResource):
-    domain_names: list[str] = ...
+    domain_names: list[str] = pydantic.Field(...)
     default_root_object: str = pydantic.Field(
         'index.html',
         description='The object that you want CloudFront to request from your origin (for example, index.html) when a viewer requests the root URL for your distribution.',
     )
     redirect_to_https: bool = pydantic.Field(True, description='Whether to set the viewer protocol policy to redirect HTTP to HTTPS')
-    default_behavior: CloudFrontBehaviorOptions = ...
+    default_behavior: CloudFrontBehaviorOptions = pydantic.Field(...)
     certificate_id: Optional[str] = pydantic.Field(
         None, description='The certificate to put on the distribution. This certificate must be valid for ALL domain names provided!'
     )
 
     def to_construct(self, scope: ManifestStack, id: str) -> cloudfront.Distribution:
         # TODO: replace with custom construct to contain distribution and DNS records
+        certificate: certmanager.ICertificate
         if self.certificate_id:
-            certificate = scope.certificates[self.certificate_id]
+            certificate = scope.resources[self.certificate_id]  # type: ignore[assignment]
         else:
             certificate = scope.get_certificate_for_domains(id=id + '-cert', domain_names=self.domain_names)
         bucket_id = self.default_behavior.origin.s3origin.bucket_id
@@ -425,14 +427,17 @@ class CloudFrontDistributionResource(BaseResource):
         return cf_dist
 
 
-PostgresEngineVersion = enum.Enum(
+PostgresEngineVersion = enum.Enum(  # type: ignore[misc]
     'PostgresEngineVersion',
     {name: name for name in dir(rds.PostgresEngineVersion) if name.startswith('VER_')},
 )
 
-MysqlEngineVersion = enum.Enum('MysqlEngineVersion', {name: name for name in dir(rds.MysqlEngineVersion) if name.startswith('VER_')})
+MysqlEngineVersion = enum.Enum(  # type: ignore[misc]
+    'MysqlEngineVersion',
+    {name: name for name in dir(rds.MysqlEngineVersion) if name.startswith('VER_')},
+)
 
-MariaDbEngineVersion = enum.Enum(
+MariaDbEngineVersion = enum.Enum(  # type: ignore[misc]
     'MariaDbEngineVersion',
     {name: name for name in dir(rds.MariaDbEngineVersion) if name.startswith('VER_')},
 )
@@ -443,7 +448,7 @@ class EngineDefinition(pydantic.BaseModel):
     mysql: Optional[MysqlEngineVersion] = None
     mariadb: Optional[MariaDbEngineVersion] = None
 
-    def to_engine(self) -> rds.DatabaseInstanceEngine | rds.IInstanceEngine:
+    def to_engine(self) -> rds.IInstanceEngine:
         engines = [e for e in (self.postgres, self.mysql, self.mariadb) if e is not None]
         assert len(engines) == 1, f'Exactly one engine must be defined, got {len(engines)}'
         if self.postgres:
@@ -471,7 +476,10 @@ class RDSDatabaseResource(BaseResource, Connectable):
     env_prefix: Optional[str] = pydantic.Field(None)
 
     def to_construct(self, scope: ManifestStack, id: str) -> rds.DatabaseInstance:
-        instance_type = self.instance_type or scope.get_default_database_instance_size()
+        if self.instance_type is None:
+            instance_type = scope.get_default_database_instance_type()
+        else:
+            instance_type = self.instance_type.to_instance_type()
 
         db = rds.DatabaseInstance(
             scope,
@@ -489,10 +497,10 @@ class RDSDatabaseResource(BaseResource, Connectable):
 
 
 class SecretsManagerSecretResource(BaseResource):
-    from_secret_name: Optional[str] = None
+    from_secret_name: str = pydantic.Field(...)
 
-    def to_construct(self, scope: ManifestStack, id: str) -> secretsmanager.ISecret:
-        ...
+    def to_construct(self, scope: ManifestStack, id: str) -> secretsmanager.ISecret:  # type: ignore[override]
+        return secretsmanager.Secret.from_secret_name_v2(scope, id, secret_name=self.from_secret_name)
 
 
 class SecretDefinition(pydantic.BaseModel):
@@ -505,8 +513,8 @@ class FargateContainerDefinition(pydantic.BaseModel):
         None,
         description='The port inside the container that should be exposed. This option is only used by load-balanced services and only applies to the first defined container.',
     )
-    ecr_repository: Optional[str] = pydantic.Field(
-        None, description='The name of the ECR repository containing the image to be used for this container. This must already exist'
+    ecr_repository: str = pydantic.Field(
+        ..., description='The name of the ECR repository containing the image to be used for this container. This must already exist'
     )
     initial_default_tag: Optional[str] = pydantic.Field(
         None,
@@ -515,7 +523,7 @@ class FargateContainerDefinition(pydantic.BaseModel):
     environment_variables: Optional[dict[str, str]] = pydantic.Field(
         default_factory=dict, description='Add environment variables to the container'
     )
-    secrets: Optional[dict[str, SecretDefinition]] = pydantic.Field(
+    secrets: dict[str, SecretDefinition] = pydantic.Field(
         default_factory=dict, description='SecretsManager secrets to add to service environment variables'
     )
     command: Optional[list[str]] = pydantic.Field(None, description='The command passed to the container on start. E.g., ["yarn", "run"]')
@@ -534,12 +542,12 @@ class ALBServiceHealthcheckOptions(pydantic.BaseModel):
 
 
 class FargateServiceResource(BaseResource, Connectable):
-    containers: dict[str, FargateContainerDefinition] = ...
+    containers: dict[str, FargateContainerDefinition] = pydantic.Field(...)
     initial_desired_count: Optional[int] = pydantic.Field(
         None,
         description='The number of instances that should initially be started on first deployment. Most of the time, you should not need to change this. Actual running count in most cases is determined by scaling policy',
     )
-    service_name: str = pydantic.Field('', description='The service name')
+    service_name: Optional[str] = pydantic.Field(None, description='The service name')
 
     def to_construct(self, scope: ManifestStack, id: str) -> ecs.FargateService:
         worker_taskdef = ecs.FargateTaskDefinition(scope, f'{id}-taskdef', family=f'{scope.stack_name}-{id}')
@@ -663,7 +671,7 @@ class AutoScalingConfiguration(pydantic.BaseModel):
 
 
 class ApplicationLoadBalancedFargateServiceResource(BaseResource, Connectable):
-    containers: dict[str, FargateContainerDefinition] = ...
+    containers: dict[str, FargateContainerDefinition] = pydantic.Field(...)
     desired_count: Optional[int] = pydantic.Field(
         None,
         description='The number of instances that should initially be started on first deployment. Most of the time, you should not need to change this. Actual running count in most cases is determined by scaling policy',
@@ -797,8 +805,9 @@ class ApplicationLoadBalancedFargateServiceResource(BaseResource, Connectable):
                 scaling.scale_on_request_count(
                     'autoscale-request-count',
                     requests_per_target=self.autoscaling_config.on_request_count.requests_per_target,
-                    scale_in_cooldown=self.autoscaling_config.on_request_count.scale_in_cooldown_seconds,
-                    scale_out_cooldown=self.autoscaling_config.on_request_count.scale_out_cooldown_seconds,
+                    scale_in_cooldown=aws_cdk.Duration.seconds(self.autoscaling_config.on_request_count.scale_in_cooldown_seconds),
+                    scale_out_cooldown=aws_cdk.Duration.seconds(self.autoscaling_config.on_request_count.scale_out_cooldown_seconds),
+                    target_group=load_balanced_service.target_group,
                 )
 
         # load_balanced_service.task_definition.task_role.add_to_policy(environment.get_parameter_policy_statement())
@@ -879,7 +888,7 @@ class SQSQueueResource(BaseResource):
     grant_consume_messages: Optional[list[Grantee]] = pydantic.Field(default_factory=list)
     grant_full_access: Optional[list[Grantee]] = pydantic.Field(default_factory=list)
 
-    def to_construct(self, scope: ManifestStack, id) -> sqs.Queue:
+    def to_construct(self, scope: ManifestStack, id: str) -> sqs.Queue:
         data_key_reuse = aws_cdk.Duration.seconds(self.data_key_reuse_seconds) if self.data_key_reuse_seconds is not None else None
         delivery_delay = aws_cdk.Duration.seconds(self.delivery_delay_seconds) if self.delivery_delay_seconds is not None else None
         receive_message_wait_time = (
@@ -930,8 +939,21 @@ class SQSQueueResource(BaseResource):
 
 
 class SNSTopicResource(BaseResource):
+    content_based_deduplication: Optional[bool] = pydantic.Field(None)
+    display_name: Optional[str] = pydantic.Field(None)
+    fifo: Optional[bool] = pydantic.Field(None)
+    # master_key = None
+    topic_name: Optional[str] = pydantic.Field(None)
+
     def to_construct(self, scope: ManifestStack, id: str) -> sns.Topic:
-        ...
+        return sns.Topic(
+            scope,
+            id,
+            content_based_deduplication=self.content_based_deduplication,
+            display_name=self.display_name,
+            fifo=self.fifo,
+            topic_name=self.topic_name,
+        )
 
 
 # class CertificateResource(BaseResource):
@@ -1005,7 +1027,7 @@ class Manifest(pydantic.BaseModel):
             mod = importlib.import_module(module_name)
             klass = getattr(mod, class_name)
             assert issubclass(klass, EnvironmentProvider)
-            return klass
+            return klass  # type: ignore[no-any-return]
 
 
 @jsii.implements(aws_cdk.IAspect)
@@ -1014,10 +1036,10 @@ class ImplicitConnectionsConfigurator:
         self.stack = stack
 
     @property
-    def _seen_connectables(self):
+    def _seen_connectables(self) -> set[Any]:
         return self.stack._seen_connectables
 
-    def visit(self, node):
+    def visit(self, node: constructs.Node) -> None:
         # if isinstance(node, elbv2.ApplicationLoadBalancer):
         #     return
         # if isinstance(node, elbv2.ApplicationListener):
@@ -1037,7 +1059,7 @@ class ImplicitConnectionsConfigurator:
 
 @jsii.implements(aws_cdk.IAspect)
 class ImplicitReadWriteGrants:
-    def visit(self, node) -> None:
+    def visit(self, node: constructs.Node) -> None:
         ...
 
 
@@ -1053,7 +1075,7 @@ class ManifestStack(aws_cdk.Stack):
         provider: EnvironmentProvider,
         manifest: Manifest,
         defaults: Optional[StackDefaults] = None,
-        **kwargs,
+        **kwargs: Any,
     ):
         env = aws_cdk.Environment(account=provider.account, region=provider.region)
 
@@ -1068,12 +1090,12 @@ class ManifestStack(aws_cdk.Stack):
         self.manifest = manifest
         self._env = env
         self._provider = provider
-        self.integrations = {}
+        self.integrations: dict[str, IntegrationBase] = {}
         self.definitions: dict[str, BaseResource] = {}
-        self.resources: dict[str, constructs.Construct] = {}
+        self.resources: dict[str, constructs.Construct | constructs.IConstruct] = {}
         self._hz_lookup_cache: dict[str, route53.IHostedZone] = {}
-        self._default_fargate_cluster = None
-        self._seen_connectables = set()
+        self._default_fargate_cluster: Optional[ecs.ICluster] = None
+        self._seen_connectables: set[Any] = set()
         self._initialize_integrations()
         self._create_resources()
         self._configure_resources()
@@ -1081,12 +1103,12 @@ class ManifestStack(aws_cdk.Stack):
         self._configure_integrations()
 
     @functools.singledispatchmethod
-    def configure_resource(self, resource: Any, definition: BaseResource) -> bool:
+    def configure_resource(self, resource: Any, definition: BaseResource) -> None:
         # TODO: defer to stack for default implementations
-        return False
+        return None
 
     @configure_resource.register
-    def configure_s3_resource(self, resource: s3.Bucket, definition: BucketResource):
+    def configure_s3_resource(self, resource: s3.Bucket, definition: BucketResource) -> None:
         # configure notifications
         bucket = resource
         if definition.grant_public_read:
@@ -1095,45 +1117,51 @@ class ManifestStack(aws_cdk.Stack):
             filters = []
             if event_configuration.filters:
                 for filterconfig in event_configuration.filters:
-                    filters.append(s3.NotificationKeyFilter(**filterconfig))
+                    filters.append(s3.NotificationKeyFilter(**filterconfig.dict()))
 
             dest = self.get_resource(event_configuration.destination.resource_id)
-            bucket.add_event_notification(event=event_configuration.event, dest=dest, *filters)
-        for grantee in definition.grant_write:
-            grantable = self.get_resource(grantee.resource_id)
-            bucket.grant_write(grantable)
-        for grantee in definition.grant_read_write:
-            grantable = self.get_resource(grantee.resource_id)
-            bucket.grant_read_write(grantable)
-        for grantee in definition.grant_read:
-            grantable = self.get_resource(grantee.resource_id)
-            bucket.grant_read(grantable)
+            bucket.add_event_notification(event_configuration.event, dest, *filters)
+        if definition.grant_write:
+            for grantee in definition.grant_write:
+                grantable = self.get_resource(grantee.resource_id)
+                bucket.grant_write(grantable)
+        if definition.grant_read_write:
+            for grantee in definition.grant_read_write:
+                grantable = self.get_resource(grantee.resource_id)
+                bucket.grant_read_write(grantable)
+        if definition.grant_read:
+            for grantee in definition.grant_read:
+                grantable = self.get_resource(grantee.resource_id)
+                bucket.grant_read(grantable)
 
     @configure_resource.register
-    def configure_sqs_queue(self, resource: sqs.Queue, definition: SQSQueueResource):
+    def configure_sqs_queue(self, resource: sqs.Queue, definition: SQSQueueResource) -> None:
         queue = resource
-        for grantee in definition.grant_full_access:
-            grantable = self.get_resource(grantee.resource_id)
-            queue.grant_purge(grantable)
-            queue.grant_consume_messages(grantable)
-            queue.grant_send_messages(grantable)
+        if definition.grant_full_access:
+            for grantee in definition.grant_full_access:
+                grantable = self.get_resource(grantee.resource_id)
+                queue.grant_purge(grantable)
+                queue.grant_consume_messages(grantable)
+                queue.grant_send_messages(grantable)
+        if definition.grant_purge:
+            for grantee in definition.grant_purge:
+                grantable = self.get_resource(grantee.resource_id)
+                queue.grant_purge(grantable)
+        if definition.grant_consume_messages:
+            for grantee in definition.grant_consume_messages:
+                grantable = self.get_resource(grantee.resource_id)
+                queue.grant_consume_messages(grantable)
+        if definition.grant_send_messages:
+            for grantee in definition.grant_send_messages:
+                grantable = self.get_resource(grantee.resource_id)
+                queue.grant_send_messages(grantable)
 
-        for grantee in definition.grant_purge:
-            grantable = self.get_resource(grantee.resource_id)
-            queue.grant_purge(grantable)
-        for grantee in definition.grant_consume_messages:
-            grantable = self.get_resource(grantee.resource_id)
-            queue.grant_consume_messages(grantable)
-        for grantee in definition.grant_send_messages:
-            grantable = self.get_resource(grantee.resource_id)
-            queue.grant_send_messages(grantable)
-
-    def _configure_resources(self):
+    def _configure_resources(self) -> None:
         for id, definition in self.definitions.items():
             resource = self.resources[id]
             self.configure_resource(resource, definition)
 
-    def get_vpc_default(self):
+    def get_vpc_default(self) -> ec2.IVpc:
         if self.defaults is not None:
             default_vpc = self.defaults.vpc
             if default_vpc is not None:
@@ -1143,7 +1171,7 @@ class ManifestStack(aws_cdk.Stack):
     def get_default_service_log_retention_period(self) -> aws_logs.RetentionDays:
         return self._provider.get_default_service_log_retention_period()
 
-    def get_default_database_instance_size(self) -> str | ec2.InstanceType:
+    def get_default_database_instance_size(self) -> ec2.InstanceType:
         return self._provider.get_default_database_instance_size()
 
     def get_default_elasticache_instance_type(self) -> str:
@@ -1165,7 +1193,7 @@ class ManifestStack(aws_cdk.Stack):
             else:
                 raise NotImplementedError("Haven't gotten to this yet")
 
-    def _make_fargate_cluster(self, id, cluster_name, vpc: Optional[ec2.IVpc] = None) -> ecs.ICluster:
+    def _make_fargate_cluster(self, id: str, cluster_name: str, vpc: Optional[ec2.IVpc] = None) -> ecs.ICluster:
         # XXX factor out once cluster resources are supported
 
         if vpc is None:
@@ -1183,7 +1211,7 @@ class ManifestStack(aws_cdk.Stack):
     def get_default_database_instance_type(self) -> ec2.InstanceType:
         return self._provider.get_default_database_instance_type()
 
-    def _get_hosted_zone_for_domain(self, domain_name: str):
+    def _get_hosted_zone_for_domain(self, domain_name: str) -> route53.IHostedZone:
         apex = '.'.join(domain_name.split('.')[-2:])
         if apex in self._hz_lookup_cache:
             return self._hz_lookup_cache[apex]
@@ -1194,8 +1222,8 @@ class ManifestStack(aws_cdk.Stack):
     def get_default_hosted_zone_name(self) -> str:
         return self._provider.get_default_hosted_zone_name()
 
-    def _get_validation_for_domains(self, domain_names: list[str]):
-        apex_domains = dict()
+    def _get_validation_for_domains(self, domain_names: list[str]) -> certmanager.CertificateValidation:
+        apex_domains: dict[str, list[str]] = dict()
         for name in domain_names:
             apex = '.'.join(name.split('.')[-2:])
             if apex in apex_domains:
@@ -1235,14 +1263,14 @@ class ManifestStack(aws_cdk.Stack):
     def region(self) -> str:
         return self._provider.region
 
-    def _configure_connections(self):
+    def _configure_connections(self) -> None:
         connectable_definitions: dict[str, Connectable] = {}
-        for resource_id, definition in self.definitions.items():
-            if isinstance(definition, Connectable):
-                connectable_definitions[resource_id] = definition
+        for resource_id, resource_definition in self.definitions.items():
+            if isinstance(resource_definition, Connectable):
+                connectable_definitions[resource_id] = resource_definition
         for cid in connectable_definitions:
             definition = connectable_definitions[cid]
-            resource = self.resources[cid]  # type: ignore
+            resource = self.resources[cid]
             if not hasattr(resource, 'connections'):
                 warnings.warn(
                     f'requested connection configuration for resource {resource!r} but does not implement the connectable interface. Skipping.'
@@ -1280,15 +1308,13 @@ class ManifestStack(aws_cdk.Stack):
 
                     method(**configuration)
 
-    def _initialize_integrations(self):
+    def _initialize_integrations(self) -> None:
         if not self.manifest.integrations:
             return
-        for integration_class_name, config in self.manifest.integrations.items():
-            module_name, class_name = integration_class_name.rsplit('.', 1)
-            mod = importlib.import_module(module_name)
-            integration_class = getattr(mod, class_name)
+        for integration_name, config in self.manifest.integrations.items():
+            integration_class = _integration_registry[integration_name]
             integration = integration_class(config)
-            self.integrations[integration_class_name] = integration
+            self.integrations[integration_name] = integration
 
     def _configure_integrations(self) -> None:
         for integration_class_name, integration in self.integrations.items():
@@ -1297,8 +1323,9 @@ class ManifestStack(aws_cdk.Stack):
 
     def get_resource(self, resource_id: str) -> Any:
         if '.' in resource_id:
+            attrs: list[str]
             resource_id, *attrs = resource_id.split('.')
-            attrs: list[str] = attrs[::-1]
+            attrs = attrs[::-1]
             obj = self.resources[resource_id]
             while attrs:
                 attr_name = attrs.pop()
@@ -1317,7 +1344,7 @@ class ManifestStack(aws_cdk.Stack):
     ) -> ecs_patterns.ApplicationLoadBalancedFargateService:
         return alb_fargate_service_definition.to_construct(scope=self, id=id)
 
-    def create_fargate_service(self, id: str, fargate_service_definition: FargateServiceResource):
+    def create_fargate_service(self, id: str, fargate_service_definition: FargateServiceResource) -> ecs.FargateService:
         return fargate_service_definition.to_construct(scope=self, id=id)
 
     def create_cloudfront_distribution(self, id: str, cloudfront_definition: CloudFrontDistributionResource) -> cloudfront.Distribution:
@@ -1343,7 +1370,7 @@ class ManifestStack(aws_cdk.Stack):
         return self.create_application_loadbalanced_fargate_service(id=id, alb_fargate_service_definition=definition)
 
     @create_resource.register
-    def _(self, id: str, definition: CloudFrontDistributionResource):
+    def _(self, id: str, definition: CloudFrontDistributionResource) -> cloudfront.Distribution:
         return self.create_cloudfront_distribution(id=id, cloudfront_definition=definition)
 
     @create_resource.register
@@ -1362,11 +1389,11 @@ class ManifestStack(aws_cdk.Stack):
                     self.resources[resource_id] = resource
                     if isinstance(resource_definition, Connectable):
                         if resource_definition.implicit_connections_allowed is True:
-                            aws_cdk.Aspects.of(resource).add(ImplicitConnectionsConfigurator(self))  # noqa
+                            aws_cdk.Aspects.of(resource).add(ImplicitConnectionsConfigurator(self))  # type: ignore  # noqa
                         elif resource_definition.implicit_connections_allowed is None:
                             # defer to manifest defined behavior if the resource is not explicitly configured
                             if self.manifest.implicit_connections is True:
-                                aws_cdk.Aspects.of(resource).add(ImplicitConnectionsConfigurator(self))  # noqa
+                                aws_cdk.Aspects.of(resource).add(ImplicitConnectionsConfigurator(self))  # type: ignore  # noqa
 
                 except CreationDeferredException as e:
                     logging.info(f'synthesis of resource {resource_id} ({type(resource_definition)} is being deferred. {e}')
@@ -1382,11 +1409,11 @@ class ManifestStack(aws_cdk.Stack):
                     self.resources[resource_id] = resource
                     if isinstance(resource_definition, Connectable):
                         if resource_definition.implicit_connections_allowed is True:
-                            aws_cdk.Aspects.of(resource).add(ImplicitConnectionsConfigurator(self))  # noqa
+                            aws_cdk.Aspects.of(resource).add(ImplicitConnectionsConfigurator(self))  # type: ignore  # noqa
                         elif resource_definition.implicit_connections_allowed is None:
                             # defer to manifest defined behavior if the resource is not explicitly configured
                             if self.manifest.implicit_connections is True:
-                                aws_cdk.Aspects.of(resource).add(ImplicitConnectionsConfigurator(self))  # noqa
+                                aws_cdk.Aspects.of(resource).add(ImplicitConnectionsConfigurator(self))  # type: ignore  # noqa
                     done.append(resource_id)
                 except CreationDeferredException as e:
                     logging.info(f'Synthesis of resource {resource_id} ({type(resource_definition)} is being deferred (again). {e}')
@@ -1403,8 +1430,8 @@ class ManifestStack(aws_cdk.Stack):
 
     @classmethod
     def from_manifest_file(
-        cls, scope: aws_cdk.App, file_path: str, provider: EnvironmentProvider, loader: Optional[ManifestLoader] = None, **kwargs
-    ):
+        cls, scope: aws_cdk.App, file_path: str, provider: EnvironmentProvider, loader: Optional[ManifestLoader] = None, **kwargs: Any
+    ) -> ManifestStack:
         if loader is None:
             loader = ManifestLoader()
         manifest = loader.load(
@@ -1420,8 +1447,8 @@ class ManifestStack(aws_cdk.Stack):
         file_path: str,
         loader: Optional[ManifestLoader] = None,
         provider_kwargs: Optional[dict[str, Any]] = None,
-        **kwargs,
-    ):
+        **kwargs: Any,
+    ) -> ManifestStack:
         if provider_kwargs is None:
             provider_kwargs = {}
         if loader is None:
@@ -1457,13 +1484,13 @@ def _deep_merge(d1: dict[str, Any], d2: dict[str, Any]) -> dict[str, Any]:
 
 
 class ManifestLoader:
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs: Any):
         self._kwargs = kwargs
 
-    def _make_context(self, **kwargs) -> dict[str, Any]:
+    def _make_context(self, **kwargs: Any) -> dict[str, Any]:
         return dict(**kwargs)
 
-    def load(self, file_path, environment_name, account: str, region: str, **template_kwargs) -> Manifest:
+    def load(self, file_path: str, environment_name: str, account: str, region: str, **template_kwargs: Any) -> Manifest:
         with open(file_path, 'r') as f:
             data = f.read()
         jinja_env = self.get_jinja_environment()
@@ -1489,16 +1516,15 @@ def _manifest_schema(indent: int = 4, outfile: Optional[str] = None) -> str:
     if outfile:
         with open(outfile, 'w') as f:
             f.write(schema)
-    else:
-        print(schema)
+
     return schema
 
 
-_integration_registry = {}
+_integration_registry: dict[str, Type[IntegrationBase]] = {}
 
 
 class IntegrationBase:
-    def __init_subclass__(cls, **kwargs):
+    def __init_subclass__(cls, **kwargs: Any) -> None:
         if hasattr(cls, 'integration_name'):
             name = cls.integration_name
         else:
@@ -1506,7 +1532,7 @@ class IntegrationBase:
         if name in _integration_registry:
             raise Exception(f'Integration with name {name} already registered')
         _integration_registry[name] = cls
-        return super().__init_subclass__(**kwargs)
+        super().__init_subclass__(**kwargs)
 
     def __init__(self, configuration: dict[str, Any]):
         self.configuration: dict[str, Any] = configuration
@@ -1520,14 +1546,14 @@ class IntegrationBase:
 
 
 class GitHubActionsIntegrationConfiguration(pydantic.BaseModel):
-    repositories: list[str] = ...
+    repositories: list[str] = pydantic.Field(...)
     role_name: Optional[str] = None
-    oidc_provider_arn: str = ...
+    oidc_provider_arn: str = pydantic.Field(...)
 
 
 class GitLabCICDIntegrationConfiguration(pydantic.BaseModel):
-    project_paths: list[str] = ...
-    oidc_provider_arn: str = ...
+    project_paths: list[str] = pydantic.Field(...)
+    oidc_provider_arn: str = pydantic.Field(...)
     role_name: Optional[str] = None
 
 
@@ -1543,13 +1569,13 @@ class DeployConstruct(constructs.Construct):
         self.manifest_stack = scope
         self.configuration = configuration
 
-    def _make_role(self, assumed_by, role_name: Optional[str] = None):
+    def _make_role(self, assumed_by: iam.IPrincipal, role_name: Optional[str] = None) -> None:
         if role_name is None:
             role_name = f'level4-deploy-{self.manifest_stack.stack_name}'
         self.deployment_role = iam.Role(self, 'deploy-role', role_name=role_name, assumed_by=assumed_by)
         aws_cdk.CfnOutput(self, 'deployrole', value=self.deployment_role.role_arn)
 
-    def _configure_resources(self):
+    def _configure_resources(self) -> None:
         self._configured_ecs_baselines = False
         for resource_id, definition in self.manifest_stack.definitions.items():
             self.configure_deployment(resource_id, definition)
@@ -1568,7 +1594,8 @@ class DeployConstruct(constructs.Construct):
     @configure_deployment.register
     def _(self, definition: RDSDatabaseResource, id: str) -> None:
         resource: rds.DatabaseInstance = self.manifest_stack.resources[id]  # type: ignore
-        resource.secret.grant_read(self.deployment_role)
+        if resource.secret is not None:
+            resource.secret.grant_read(self.deployment_role)
 
     @configure_deployment.register
     def _(self, definition: ApplicationLoadBalancedFargateServiceResource, id: str) -> None:
@@ -1612,8 +1639,8 @@ class DeployConstruct(constructs.Construct):
 class GitHubActionIntegrationConstruct(DeployConstruct):
     def __init__(self, scope: ManifestStack, id: str, *, configuration: GitHubActionsIntegrationConfiguration):
         super().__init__(scope, id, configuration=configuration)
-        conditions = {'StringEquals': {'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com'}}
-        condition = {'StringLike': {'token.actions.githubusercontent.com:sub': []}}
+        conditions: dict[str, Any] = {'StringEquals': {'token.actions.githubusercontent.com:aud': 'sts.amazonaws.com'}}
+        condition: dict[str, dict[str, list[str]]] = {'StringLike': {'token.actions.githubusercontent.com:sub': []}}
 
         for repo in configuration.repositories:
             condition['StringLike']['token.actions.githubusercontent.com:sub'].append(f'repo:{repo}:*')
@@ -1629,7 +1656,7 @@ class GitHubActionIntegrationConstruct(DeployConstruct):
 class GitLabCICDIntegrationConstruct(DeployConstruct):
     def __init__(self, scope: ManifestStack, id: str, *, configuration: GitLabCICDIntegrationConfiguration):
         super().__init__(scope, id, configuration=configuration)
-        condition = {'gitlab.example.com:sub': []}
+        condition: dict[str, list[str]] = {'gitlab.example.com:sub': []}
         provider_url = configuration.oidc_provider_arn.split('/')[-1]
         for repo in configuration.project_paths:
             condition[f'{provider_url}:sub'].append(f'repo:{repo}:*')

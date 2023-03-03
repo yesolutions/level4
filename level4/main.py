@@ -157,11 +157,11 @@ class {camel_name}Stack(ManifestStack):
 '''
 
 
-def _init():
+def _init() -> None:
     subprocess.run(['cdk', 'init', 'app', '--language', 'python'], check=True, shell=True)
 
 
-def _init_standalone(name) -> int:
+def _init_standalone(name: str) -> int:
     _init()
     pyname = name.replace('-', '_')
     manifest_path = f'{pyname}/{name}-l4-manifest.yaml'
@@ -180,7 +180,7 @@ def _init_standalone(name) -> int:
     return 0
 
 
-def _init_app(name) -> int:
+def _init_app(name: str) -> int:
     _init()
     pyname = name.replace('-', '_')
     camel_name = ''.join(part.title() for part in pyname.split('_'))
@@ -206,7 +206,7 @@ def init(level4_template: Literal['standalone', 'app'], cdk_args: list[str]) -> 
         return 1
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser('level4')
     subparsers = parser.add_subparsers(title='subcommands', description='valid subcommands', dest='command')
     init_parser = subparsers.add_parser('init')
