@@ -1007,16 +1007,13 @@ class Manifest(pydantic.BaseModel):
         description='The default account to use for deployments',
     )
 
-    github_repositories: Optional[list[str]] = pydantic.Field(
-        None,
-        description='Allows listed github repos to deploy resources in this manifest. Repositories should be in the format of `Owner/Repo`',
-    )
     tags: Optional[dict[str, dict[str, str]]] = pydantic.Field(None, description='Tags that will be added to all resources in the stack.')
     implicit_connections: bool = False
 
     provider_class: Optional[str] = pydantic.Field(None, description='The environment provider class to use')
 
     provider_config: dict[str, Any] = pydantic.Field(description='keyword arguments to pass to the provider', default_factory=dict)
+
     integrations: Optional[dict[str, dict[str, Any]]] = None
 
     def get_provider_class(self) -> Type[EnvironmentProvider]:

@@ -6,3 +6,4 @@ pyyaml
 types-PyYAML
 coverage
 mypy
+types-setuptools

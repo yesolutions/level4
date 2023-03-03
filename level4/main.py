@@ -1,10 +1,13 @@
 import argparse
+import copy
 import json
 import os
 import pathlib
 import subprocess
 import sys
 from typing import Literal
+
+import level4
 
 _MANIFEST_STANDALONE_TEMPLATE = '''\
 version: "1"
@@ -15,18 +18,25 @@ name: {name}
 
 
 
+# Define the environments you will use
+# These can be named anything you want.
+# When defining resources, you can also use {{{{ environment_name }}}} as a variable in configuration strings
 environments:
   - dev
   - staging
+  - production
+
   # you can also customize certain attributes per environment, like account or region
   # this can be useful for solutions deployed to multiple regions
   # or where environments may be separated by account/region for security, regulatory, or other reasons
-  - name: production
-    account: 1234567890
-    region: us-east-1
-  - name: eu-production
-    account: 0987654321
-    region: eu-west-2
+
+  #  - name: production
+  #    account: 1234567890
+  #    region: us-east-1
+  #  - name: eu-production
+  #    account: 0987654321
+  #    region: eu-west-2
+
     # you can also configure provider overrides per-environment
     # provider_config:
     #   default_hosted_zone_name: 'my-apex-domain.eu'
@@ -40,14 +50,14 @@ environments:
 regions:
  - us-east-1
 
-# You can customize the Provider class used
+# Custom Provider classes can be used that provide defaults
 # provider_class: 'app.MyProvider'
 
 # provide provider level configurations:
 provider_config:
   default_hosted_zone_name: 'my-apex-domain.com'  # use this zone by default when resources need DNS names, but no explicit name is given
-  vpc_lookup_params:  # help find correct VPC -- for example, if you separate environments by VPC
-    vpc_name: '{{ environment_name }}-managed-vpc'
+  vpc_lookup_params:  # help find correct existing VPC -- for example, if you separate environments by VPC
+    vpc_name: '{{{{ environment_name }}}}-vpc'
 
 
 resources:
@@ -159,6 +169,35 @@ class {camel_name}Stack(ManifestStack):
 
 def _init() -> None:
     subprocess.run(['cdk', 'init', 'app', '--language', 'python'], check=True, shell=True)
+    _install_level4_requirements()
+
+
+def _install_level4_requirements() -> None:
+    print('Installing level4 requirements to .venv ...', file=sys.stderr)
+    with open('requirements.txt', 'r') as f:
+        existing_requirements = f.readlines()
+    existing_requirements.append(f'level4=={level4.__VERSION__}')
+    new_requirements = '\n'.join(existing_requirements)
+    with open('requirements.txt', 'w') as f:
+        f.write(new_requirements)
+
+    PATH = os.environ['PATH']
+    here = pathlib.Path(os.getcwd())
+    venv_path = str((here / '.venv').absolute())
+    if sys.platform == 'win32':
+        venv_bin = here / '.venv' / 'Scripts'
+        python = venv_bin / 'python.exe'
+    else:
+        venv_bin = here / '.venv' / 'bin'
+        python = venv_bin / 'python'
+    PATH = str(venv_bin.absolute()) + ':' + PATH
+    env = copy.deepcopy(os.environ)
+    env['PATH'] = PATH
+    env['VIRTUAL_ENV'] = venv_path
+    subprocess.run(
+        [python, '-m', 'pip', 'install', '--require-virtualenv', '-r', 'requirements.txt'], env=env, capture_output=True, check=True
+    )
+    print('Done', file=sys.stderr)
 
 
 def _init_standalone(name: str) -> int:
@@ -210,7 +249,7 @@ def main() -> None:
     parser = argparse.ArgumentParser('level4')
     subparsers = parser.add_subparsers(title='subcommands', description='valid subcommands', dest='command')
     init_parser = subparsers.add_parser('init')
-    init_parser.add_argument('--level4-template', type=str, choices=('standalone', 'app'), default='app')
+    init_parser.add_argument('--level4-template', type=str, choices=('standalone', 'app'), default='standalone')
     init_parser.add_argument('cdk_init_args', nargs='*', action='append', help='additional arguments passed to `cdk init`')
     args = parser.parse_args()
     if args.command == 'init':

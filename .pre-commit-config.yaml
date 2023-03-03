@@ -40,3 +40,4 @@ repos:
           - aws-cdk-lib
           - types-PyYAML
           - pydantic
+          - types-setuptools
