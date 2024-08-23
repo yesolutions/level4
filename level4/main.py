@@ -7,7 +7,6 @@ import subprocess
 import sys
 from typing import Literal
 
-import level4
 
 _MANIFEST_STANDALONE_TEMPLATE = '''\
 version: "1"
@@ -173,6 +172,8 @@ def _init() -> None:
 
 
 def _install_level4_requirements() -> None:
+    import level4
+
     print('Installing level4 requirements to .venv ...', file=sys.stderr)
     with open('requirements.txt', 'r') as f:
         existing_requirements = f.readlines()

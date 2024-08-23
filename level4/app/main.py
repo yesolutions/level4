@@ -3,8 +3,8 @@ import os
 
 import aws_cdk as cdk
 
-from level4 import ManifestLoader
-from level4 import ManifestStack
+from level4.model import ManifestLoader
+from level4.model import ManifestStack
 
 
 def create_app(spec_files: list[str], synth: bool = True) -> cdk.App:
