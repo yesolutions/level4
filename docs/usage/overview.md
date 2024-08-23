@@ -15,4 +15,3 @@ necessary leverage to make deploying individual solutions effortless.
 
 Manifests describe all the related resources you use in each individual solution you have. There's a lot of flexibility
 in how much or how little you describe with your manifests.
-
