@@ -1500,7 +1500,7 @@ class ManifestLoader:
         environment_resources = resources.pop(environment_name, {})
         environment_merged_resources = _deep_merge(default_resources, environment_resources)
         manifest_data['resources'] = {environment_name: environment_merged_resources}
-        manifest = Manifest.parse_obj(manifest_data)
+        manifest: Manifest = Manifest.parse_obj(manifest_data)
         return manifest
 
     def get_jinja_environment(self) -> jinja2.Environment:
@@ -1509,7 +1509,7 @@ class ManifestLoader:
 
 
 def _manifest_schema(indent: int = 4, outfile: Optional[str] = None) -> str:
-    schema = Manifest.schema_json(indent=indent)
+    schema: str = Manifest.schema_json(indent=indent)
     if outfile:
         with open(outfile, 'w') as f:
             f.write(schema)
