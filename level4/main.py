@@ -167,7 +167,7 @@ class {camel_name}Stack(ManifestStack):
 
 
 def _init() -> None:
-    subprocess.run(['cdk', 'init', 'app', '--language', 'python'], check=True, shell=True)
+    subprocess.run(['cdk', 'init', 'app', '--language', 'python'], check=True)
     _install_level4_requirements()
 
 
